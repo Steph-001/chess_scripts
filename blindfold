@@ -1,0 +1,8 @@
+#!/bin/bash
+# Chess Trainer Wrapper Script
+
+# Path to the chess trainer script (Windows path from WSL)
+SCRIPT_PATH="$HOME/chess_scripts/chess_trainer.py"
+
+# Run with Windows Python
+python.exe "$SCRIPT_PATH"

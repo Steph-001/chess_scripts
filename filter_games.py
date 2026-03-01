@@ -1,8 +1,47 @@
 #!/usr/bin/env python3
 """
-Filter PGN games by Elo difference between players.
-Streams the PGN file game by game — handles any size database.
-Interactive prompts with sensible defaults.
+filter_games.py — Filter PGN games by Elo difference and rating range.
+Streams the file line by line — handles huge PGN files without memory issues.
+
+Usage:
+    filter_games [OPTIONS] [FILE]
+
+Options:
+    -h, --help      Show this help message
+    FILE            Path to PGN file (prompted if not given)
+
+Study modes:
+    1. Stronger opponent
+       One player in your Elo range, opponent N points HIGHER.
+       Study how stronger players punish mistakes at your level.
+
+    2. Weaker opponent
+       One player in your Elo range, opponent N points LOWER.
+       Study how players at your level handle weaker opposition.
+
+    3. Your level
+       Both players in your Elo range (small difference).
+       See typical mistakes and patterns at your level.
+
+    4. Target level
+       Both players in a custom range you define.
+       Study a different rating bracket entirely.
+
+    5. Custom
+       Set White Elo range, Black Elo range, and minimum difference
+       independently. Maximum flexibility.
+
+Output options:
+    1. All matching games in one file
+    2. Split: stronger player wins / weaker player wins or draws
+    3. Both
+
+Output files are saved in the same directory as the input PGN.
+
+Examples:
+    filter_games my_database.pgn
+    filter_games /path/to/megabase.pgn
+    filter_games
 """
 
 import re
@@ -18,50 +57,285 @@ def prompt(message, default=None):
     return input(f"{message}: ").strip()
 
 
-def parse_header(game_lines, tag):
-    """Extract a header value from a list of game lines."""
-    for line in game_lines:
-        if line.startswith(f'[{tag} "'):
-            match = re.search(rf'\[{tag}\s+"([^"]*)"\]', line)
-            if match:
-                return match.group(1)
-        # Headers are at the top; stop once we hit a non-header line
-        if not line.startswith("[") and line.strip():
-            break
-    return None
+def parse_header_line(line):
+    """Extract tag name and value from a PGN header line."""
+    match = re.match(r'\[(\w+)\s+"([^"]*)"\]', line)
+    if match:
+        return match.group(1), match.group(2)
+    return None, None
 
 
-def get_elo(game_lines, color):
+def game_iterator(pgn_path):
+    """
+    Yield (headers_dict, full_game_text) one game at a time.
+    Streams the file — only one game in memory at a time.
+    """
+    current_lines = []
+    headers = {}
+
+    with open(pgn_path, "r", encoding="utf-8", errors="replace") as f:
+        for line in f:
+            stripped = line.strip()
+
+            # New game starts with [Event
+            if stripped.startswith('[Event '):
+                if current_lines:
+                    yield headers, "".join(current_lines)
+                current_lines = []
+                headers = {}
+
+            # Parse header lines
+            tag, value = parse_header_line(stripped)
+            if tag:
+                headers[tag] = value
+
+            current_lines.append(line)
+
+    # Last game
+    if current_lines:
+        yield headers, "".join(current_lines)
+
+
+def get_elo(headers, color):
     """Get Elo rating for White or Black. Returns None if missing/invalid."""
-    val = parse_header(game_lines, f"{color}Elo")
-    if val and val.isdigit():
+    val = headers.get(f"{color}Elo", "")
+    if val.isdigit():
         return int(val)
     return None
 
 
-def stream_games(pgn_path):
-    """Yield one game at a time as a list of lines."""
-    current_game = []
-    in_game = False
+def save_pgn(games, filepath):
+    """Save a list of game text strings to a PGN file."""
+    with open(filepath, "w", encoding="utf-8") as f:
+        for g in games:
+            f.write(g.strip())
+            f.write("\n\n")
 
-    with open(pgn_path, "r", encoding="utf-8", errors="replace") as f:
-        for line in f:
-            # Detect start of a new game
-            if line.startswith('[Event "'):
-                if current_game:
-                    yield current_game
-                current_game = [line]
-                in_game = True
-            elif in_game:
-                current_game.append(line)
 
-    # Don't forget the last game
-    if current_game:
-        yield current_game
+def show_help():
+    """Print the module docstring as help."""
+    print(__doc__)
+    sys.exit(0)
+
+
+def get_study_mode():
+    """Prompt for study mode and return filter parameters."""
+    print("\nStudy mode:")
+    print("  1. Stronger opponent (your range vs higher-rated)")
+    print("  2. Weaker opponent (your range vs lower-rated)")
+    print("  3. Your level (both players in your range)")
+    print("  4. Target level (both players in a custom range)")
+    print("  5. Custom (set everything manually)")
+    mode = prompt("\nChoice", "1")
+
+    if mode == "1":
+        print("\n--- Stronger opponent ---")
+        lo = int(prompt("Your Elo range — lower bound", 1650))
+        hi = int(prompt("Your Elo range — upper bound", 1850))
+        diff = int(prompt("Minimum Elo difference of opponent", 200))
+        max_diff_str = prompt("Maximum Elo difference of opponent (Enter for none)", "none")
+        max_diff = None if max_diff_str.lower() == "none" else int(max_diff_str)
+        return {
+            "mode": "stronger",
+            "your_lo": lo,
+            "your_hi": hi,
+            "min_diff": diff,
+            "max_diff": max_diff,
+        }
+
+    elif mode == "2":
+        print("\n--- Weaker opponent ---")
+        lo = int(prompt("Your Elo range — lower bound", 1650))
+        hi = int(prompt("Your Elo range — upper bound", 1850))
+        diff = int(prompt("Minimum Elo difference of opponent", 200))
+        max_diff_str = prompt("Maximum Elo difference of opponent (Enter for none)", "none")
+        max_diff = None if max_diff_str.lower() == "none" else int(max_diff_str)
+        return {
+            "mode": "weaker",
+            "your_lo": lo,
+            "your_hi": hi,
+            "min_diff": diff,
+            "max_diff": max_diff,
+        }
+
+    elif mode == "3":
+        print("\n--- Your level ---")
+        lo = int(prompt("Elo range — lower bound", 1650))
+        hi = int(prompt("Elo range — upper bound", 1850))
+        max_diff = int(prompt("Maximum Elo difference between players", 50))
+        return {
+            "mode": "your_level",
+            "range_lo": lo,
+            "range_hi": hi,
+            "max_diff": max_diff,
+        }
+
+    elif mode == "4":
+        print("\n--- Target level ---")
+        lo = int(prompt("Elo range — lower bound", 1900))
+        hi = int(prompt("Elo range — upper bound", 2100))
+        max_diff = int(prompt("Maximum Elo difference between players", 50))
+        return {
+            "mode": "target_level",
+            "range_lo": lo,
+            "range_hi": hi,
+            "max_diff": max_diff,
+        }
+
+    elif mode == "5":
+        print("\n--- Custom ---")
+        w_lo = int(prompt("White Elo — lower bound", 1))
+        w_hi = int(prompt("White Elo — upper bound", 3000))
+        b_lo = int(prompt("Black Elo — lower bound", 1))
+        b_hi = int(prompt("Black Elo — upper bound", 3000))
+        min_diff = int(prompt("Minimum Elo difference (0 for any)", 0))
+        return {
+            "mode": "custom",
+            "w_lo": w_lo,
+            "w_hi": w_hi,
+            "b_lo": b_lo,
+            "b_hi": b_hi,
+            "min_diff": min_diff,
+        }
+
+    else:
+        print("Invalid choice.")
+        sys.exit(1)
+
+
+def matches_filter(w_elo, b_elo, params):
+    """Check if a game matches the filter parameters."""
+    diff = abs(w_elo - b_elo)
+
+    mode = params["mode"]
+
+    if mode == "stronger":
+        your_lo = params["your_lo"]
+        your_hi = params["your_hi"]
+        min_diff = params["min_diff"]
+        max_diff = params.get("max_diff")
+        # White in your range, Black is stronger
+        if your_lo <= w_elo <= your_hi:
+            d = b_elo - w_elo
+            if d >= min_diff and (max_diff is None or d <= max_diff):
+                return True
+        # Black in your range, White is stronger
+        if your_lo <= b_elo <= your_hi:
+            d = w_elo - b_elo
+            if d >= min_diff and (max_diff is None or d <= max_diff):
+                return True
+        return False
+
+    elif mode == "weaker":
+        your_lo = params["your_lo"]
+        your_hi = params["your_hi"]
+        min_diff = params["min_diff"]
+        max_diff = params.get("max_diff")
+        # White in your range, Black is weaker
+        if your_lo <= w_elo <= your_hi:
+            d = w_elo - b_elo
+            if d >= min_diff and (max_diff is None or d <= max_diff):
+                return True
+        # Black in your range, White is weaker
+        if your_lo <= b_elo <= your_hi:
+            d = b_elo - w_elo
+            if d >= min_diff and (max_diff is None or d <= max_diff):
+                return True
+        return False
+
+    elif mode in ("your_level", "target_level"):
+        range_lo = params["range_lo"]
+        range_hi = params["range_hi"]
+        max_diff = params["max_diff"]
+        if range_lo <= w_elo <= range_hi and range_lo <= b_elo <= range_hi:
+            if diff <= max_diff:
+                return True
+        return False
+
+    elif mode == "custom":
+        if not (params["w_lo"] <= w_elo <= params["w_hi"]):
+            return False
+        if not (params["b_lo"] <= b_elo <= params["b_hi"]):
+            return False
+        if diff < params["min_diff"]:
+            return False
+        return True
+
+    return False
+
+
+def get_output_choice():
+    """Prompt for output format."""
+    print("\nHow do you want to save?")
+    print("  1. All matching games in one file")
+    print("  2. Split: stronger player wins / weaker player wins or draws")
+    print("  3. Both")
+    return prompt("Choice", "1")
+
+
+def save_results(matching, out_dir, choice):
+    """Save results according to user's output choice."""
+    if choice in ("1", "3"):
+        out_path = os.path.join(out_dir, "filtered_all.pgn")
+        save_pgn(matching, out_path)
+        print(f"Saved {len(matching)} games to {out_path}")
+
+    if choice in ("2", "3"):
+        stronger_wins = []
+        weaker_wins_or_draws = []
+
+        for game_text in matching:
+            # Re-parse headers from game text for result splitting
+            w_elo = None
+            b_elo = None
+            result = None
+            for line in game_text.split("\n"):
+                stripped = line.strip()
+                tag, value = parse_header_line(stripped)
+                if tag == "WhiteElo" and value.isdigit():
+                    w_elo = int(value)
+                elif tag == "BlackElo" and value.isdigit():
+                    b_elo = int(value)
+                elif tag == "Result":
+                    result = value
+                if w_elo and b_elo and result:
+                    break
+
+            if w_elo is None or b_elo is None:
+                weaker_wins_or_draws.append(game_text)
+                continue
+
+            stronger_won = False
+            if w_elo > b_elo and result == "1-0":
+                stronger_won = True
+            elif b_elo > w_elo and result == "0-1":
+                stronger_won = True
+
+            if stronger_won:
+                stronger_wins.append(game_text)
+            else:
+                weaker_wins_or_draws.append(game_text)
+
+        if stronger_wins:
+            out_path = os.path.join(out_dir, "stronger_wins.pgn")
+            save_pgn(stronger_wins, out_path)
+            print(f"Saved {len(stronger_wins)} games to {out_path}")
+
+        if weaker_wins_or_draws:
+            out_path = os.path.join(out_dir, "weaker_wins_or_draws.pgn")
+            save_pgn(weaker_wins_or_draws, out_path)
+            print(f"Saved {len(weaker_wins_or_draws)} games to {out_path}")
+
+        if not stronger_wins and not weaker_wins_or_draws:
+            print("No games to save.")
 
 
 def main():
-    print("\n=== PGN Elo Difference Filter ===\n")
+    # --- Help ---
+    if len(sys.argv) > 1 and sys.argv[1] in ("-h", "--help"):
+        show_help()
+
+    print("\n=== PGN Elo Filter ===\n")
 
     # --- Input file ---
     if len(sys.argv) > 1:
@@ -75,110 +349,44 @@ def main():
         print(f"Error: file not found: {pgn_path}")
         sys.exit(1)
 
-    # --- Parameters ---
-    min_diff = int(prompt("Minimum Elo difference", 200))
+    # --- Study mode ---
+    params = get_study_mode()
 
-    use_range = prompt("At least one player in a specific Elo range? (y/n)", "y").lower()
-    elo_low = None
-    elo_high = None
-    if use_range == "y":
-        elo_low = int(prompt("  Lower bound", 1650))
-        elo_high = int(prompt("  Upper bound", 1850))
-
-    # --- Output choice (ask before scanning) ---
-    print("\nHow do you want to save?")
-    print("  1. All matching games in one file")
-    print("  2. Split: stronger player wins / weaker player wins or draws")
-    print("  3. Both")
-    choice = prompt("Choice", "1")
-
-    out_dir = os.path.dirname(pgn_path)
-
-    # Open output files
-    f_all = None
-    f_strong = None
-    f_weak = None
-
-    if choice in ("1", "3"):
-        f_all = open(os.path.join(out_dir, "filtered_all.pgn"), "w", encoding="utf-8")
-    if choice in ("2", "3"):
-        f_strong = open(os.path.join(out_dir, "stronger_wins.pgn"), "w", encoding="utf-8")
-        f_weak = open(os.path.join(out_dir, "weaker_wins_or_draws.pgn"), "w", encoding="utf-8")
-
-    # --- Scan and filter ---
+    # --- Scan (streaming) ---
     print("\nScanning games...")
+    matching = []
     total = 0
-    matched = 0
-    skipped_no_elo = 0
-    strong_count = 0
-    weak_count = 0
+    skipped = 0
 
-    for game_lines in stream_games(pgn_path):
+    for headers, game_text in game_iterator(pgn_path):
         total += 1
         if total % 100000 == 0:
-            print(f"  ...processed {total} games so far ({matched} matches)")
+            print(f"  ...scanned {total} games, {len(matching)} matches so far")
 
-        w_elo = get_elo(game_lines, "White")
-        b_elo = get_elo(game_lines, "Black")
+        w_elo = get_elo(headers, "White")
+        b_elo = get_elo(headers, "Black")
 
         if w_elo is None or b_elo is None:
-            skipped_no_elo += 1
+            skipped += 1
             continue
 
-        diff = abs(w_elo - b_elo)
-        if diff < min_diff:
-            continue
+        if matches_filter(w_elo, b_elo, params):
+            matching.append(game_text)
 
-        if elo_low is not None and elo_high is not None:
-            w_in = elo_low <= w_elo <= elo_high
-            b_in = elo_low <= b_elo <= elo_high
-            if not w_in and not b_in:
-                continue
+    print(f"\nScanned {total} games total.")
+    if skipped:
+        print(f"  ({skipped} skipped — missing Elo data)")
+    print(f"Found {len(matching)} matching games.")
 
-        matched += 1
-        game_text = "".join(game_lines).strip() + "\n\n"
+    if not matching:
+        print("No matching games. Try adjusting your criteria.")
+        sys.exit(0)
 
-        if f_all:
-            f_all.write(game_text)
-
-        if f_strong or f_weak:
-            result = parse_header(game_lines, "Result")
-            stronger_won = False
-            if w_elo > b_elo and result == "1-0":
-                stronger_won = True
-            elif b_elo > w_elo and result == "0-1":
-                stronger_won = True
-
-            if stronger_won:
-                strong_count += 1
-                if f_strong:
-                    f_strong.write(game_text)
-            else:
-                weak_count += 1
-                if f_weak:
-                    f_weak.write(game_text)
-
-    # Close files
-    for f in (f_all, f_strong, f_weak):
-        if f:
-            f.close()
-
-    # --- Summary ---
-    print(f"\nDone! Scanned {total} games total.")
-    if skipped_no_elo:
-        print(f"  ({skipped_no_elo} games skipped — missing Elo data)")
-    print(f"  {matched} games matched criteria.")
-
-    if choice in ("1", "3") and matched:
-        print(f"  Saved {matched} games to filtered_all.pgn")
-    if choice in ("2", "3"):
-        if strong_count:
-            print(f"  Saved {strong_count} games to stronger_wins.pgn")
-        if weak_count:
-            print(f"  Saved {weak_count} games to weaker_wins_or_draws.pgn")
-
-    if not matched:
-        print("No matching games found. Try adjusting your criteria.")
+    # --- Output ---
+    choice = get_output_choice()
+    out_dir = os.path.dirname(pgn_path)
+    save_results(matching, out_dir, choice)
+    print("\nDone!")
 
 
 if __name__ == "__main__":
